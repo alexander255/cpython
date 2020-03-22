@@ -220,6 +220,38 @@ typedef unsigned short mode_t;
 #  define UF_COMPRESSED 0x00000020
 #endif
 
+#ifndef UF_TRACKED
+#  define UF_TRACKED 0x00000040
+#endif
+
+#ifndef UF_SYSTEM
+#  define UF_SYSTEM 0x00000080
+#endif
+
+#ifndef UF_SPARSE
+#  define UF_SPARSE 0x00000100
+#endif
+
+#ifndef UF_OFFLINE
+#  define UF_OFFLINE 0x00000200
+#endif
+
+#ifndef UF_REPARSE
+#  define UF_REPARSE 0x00000400
+#endif
+
+#ifndef UF_ARCHIVE
+#  define UF_ARCHIVE 0x00000800
+#endif
+
+#ifndef UF_READONLY
+#  define UF_READONLY 0x00001000
+#endif
+
+#ifndef UF_ENCRYPTED
+#  define UF_ENCRYPTED 0x00002000
+#endif
+
 #ifndef UF_HIDDEN
 #  define UF_HIDDEN 0x00008000
 #endif
@@ -466,7 +498,15 @@ UF_IMMUTABLE: file may not be changed\n\
 UF_APPEND: file may only be appended to\n\
 UF_OPAQUE: directory is opaque when viewed through a union stack\n\
 UF_NOUNLINK: file may not be renamed or deleted\n\
-UF_COMPRESSED: OS X: file is hfs-compressed\n\
+UF_COMPRESSED: file is compressed\n\
+UF_TRACKED: OS X: renames and deletes are tracked\n\
+UF_SYSTEM: Windows: system file bit\n\
+UF_SPARSE: sparse file\n\
+UF_OFFLINE: Windows: file is offline (slow to access)\n\
+UF_REPARSE: Windows: reparse point file\n\
+UF_ARCHIVE: Windows: file should be archived\n\
+UF_READONLY: Windows: file is read-only\n\
+UF_ENCRYPTED: Windows / Linux: file is encrypted\n\
 UF_HIDDEN: OS X: file should not be displayed\n\
 SF_ARCHIVED: file may be archived\n\
 SF_IMMUTABLE: file may not be changed\n\
@@ -489,6 +529,10 @@ ST_CTIME\n\
 
 "FILE_ATTRIBUTE_*: Windows file attribute constants\n\
                    (only present on Windows)\n\
+\n"
+
+"STATX_ATTR_*: Linux statx(2) file attribute constants\n\
+               (only present on modern Linux)\n\
 ");
 
 
@@ -553,6 +597,14 @@ PyInit__stat(void)
     if (PyModule_AddIntMacro(m, UF_OPAQUE)) return NULL;
     if (PyModule_AddIntMacro(m, UF_NOUNLINK)) return NULL;
     if (PyModule_AddIntMacro(m, UF_COMPRESSED)) return NULL;
+    if (PyModule_AddIntMacro(m, UF_TRACKED)) return NULL;
+    if (PyModule_AddIntMacro(m, UF_SYSTEM)) return NULL;
+    if (PyModule_AddIntMacro(m, UF_SPARSE)) return NULL;
+    if (PyModule_AddIntMacro(m, UF_OFFLINE)) return NULL;
+    if (PyModule_AddIntMacro(m, UF_REPARSE)) return NULL;
+    if (PyModule_AddIntMacro(m, UF_ARCHIVE)) return NULL;
+    if (PyModule_AddIntMacro(m, UF_READONLY)) return NULL;
+    if (PyModule_AddIntMacro(m, UF_ENCRYPTED)) return NULL;
     if (PyModule_AddIntMacro(m, UF_HIDDEN)) return NULL;
     if (PyModule_AddIntMacro(m, SF_ARCHIVED)) return NULL;
     if (PyModule_AddIntMacro(m, SF_IMMUTABLE)) return NULL;
@@ -596,7 +648,15 @@ PyInit__stat(void)
         PyLong_FromUnsignedLong(IO_REPARSE_TAG_MOUNT_POINT))) return NULL;
     if (PyModule_AddObject(m, "IO_REPARSE_TAG_APPEXECLINK",
         PyLong_FromUnsignedLong(IO_REPARSE_TAG_APPEXECLINK))) return NULL;
-#endif
+#endif /* MS_WINDOWS */
+
+#ifdef HAVE_LINUX_STATX
+    if (PyModule_AddIntMacro(m, STATX_ATTR_COMPRESSED)) return NULL;
+    if (PyModule_AddIntMacro(m, STATX_ATTR_IMMUTABLE)) return NULL;
+    if (PyModule_AddIntMacro(m, STATX_ATTR_APPEND)) return NULL;
+    if (PyModule_AddIntMacro(m, STATX_ATTR_NODUMP)) return NULL;
+    if (PyModule_AddIntMacro(m, STATX_ATTR_ENCRYPTED)) return NULL;
+#endif /* HAVE_LINUX_STATX */
 
     return m;
 }

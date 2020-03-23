@@ -367,10 +367,17 @@ extern char        *ctermid_r(char *);
 #       define LSTAT win32_lstat
 #       define FSTAT _Py_fstat_noraise
 #       define STRUCT_STAT struct _Py_stat_struct
+#elif defined(HAVE_LINUX_STATX)
+#       define STAT linux_stat
+#       define LSTAT linux_lstat
+#       define FSTAT linux_fstat
+#       define FSTATAT linux_fstatat
+#       define STRUCT_STAT struct statx
 #else
 #       define STAT stat
 #       define LSTAT lstat
 #       define FSTAT fstat
+#       define FSTATAT fstatat
 #       define STRUCT_STAT struct stat
 #endif
 
@@ -1908,6 +1915,39 @@ win32_stat(const wchar_t* path, struct _Py_stat_struct *result)
 
 #endif /* MS_WINDOWS */
 
+
+#ifdef HAVE_LINUX_STATX
+
+// Extend this list when adding support for new Linux statx fields
+#define LINUX_STATX_MASK STATX_BASIC_STATS | STATX_BTIME
+
+static int
+linux_stat(const char* path, struct statx* result)
+{
+    return statx(AT_FDCWD, path, 0, LINUX_STATX_MASK, result);
+}
+
+static int
+linux_lstat(const char* path, struct statx* result)
+{
+    return statx(AT_FDCWD, path, AT_SYMLINK_NOFOLLOW, LINUX_STATX_MASK, result);
+}
+
+static int
+linux_fstat(int fd, struct statx* result)
+{
+    return statx(fd, "", AT_EMPTY_PATH, LINUX_STATX_MASK, result);
+}
+
+static int
+linux_fstatat(int dirfd, const char* path, struct statx* result, int flags)
+{
+    return statx(dirfd, path, flags, LINUX_STATX_MASK, result);
+}
+
+#endif /* HAVE_LINUX_STATX */
+
+
 PyDoc_STRVAR(stat_result__doc__,
 "stat_result: Result from stat, fstat, or lstat.\n\n\
 This object may be accessed either as a tuple of\n\
@@ -1964,6 +2004,10 @@ static PyStructSequence_Field stat_result_fields[] = {
 #ifdef HAVE_STRUCT_STAT_ST_REPARSE_TAG
     {"st_reparse_tag", "Windows reparse tag"},
 #endif
+#ifdef HAVE_LINUX_STATX
+    {"st_attributes", "Linux file attribute bits"},
+    {"st_attributes_mask", "Linux supported file attribute bits on this filesystem"},
+#endif
     {0}
 };
 
@@ -2019,6 +2063,14 @@ static PyStructSequence_Field stat_result_fields[] = {
 #define ST_REPARSE_TAG_IDX (ST_FSTYPE_IDX+1)
 #else
 #define ST_REPARSE_TAG_IDX ST_FSTYPE_IDX
+#endif
+
+#ifdef HAVE_LINUX_STATX
+#define ST_ATTRIBUTES_IDX (ST_REPARSE_TAG_IDX+1)
+#define ST_ATTRIBUTES_MASK_IDX (ST_REPARSE_TAG_IDX+2)
+#else
+#define ST_ATTRIBUTES_IDX ST_REPARSE_TAG_IDX
+#define ST_ATTRIBUTES_MASK_IDX ST_REPARSE_TAG_IDX
 #endif
 
 static PyStructSequence_Desc stat_result_desc = {
@@ -2200,6 +2252,77 @@ exit:
     Py_XDECREF(float_s);
 }
 
+#ifdef HAVE_LINUX_STATX
+
+/* pack a system statx C structure into the Python stat tuple
+   (used by posix_stat() and posix_fstat()) */
+static PyObject*
+_pystat_fromstructstat(struct statx* stx)
+{
+    unsigned long long attributes;
+    PyObject *StatResultType = _posixstate_global->StatResultType;
+    PyObject *v = PyStructSequence_New((PyTypeObject *)StatResultType);
+    if (v == NULL)
+        return NULL;
+
+    // According to http://lkml.iu.edu/hypermail/linux/kernel/1611.2/02407.html
+    // the following flags are either always available or filled in “whether
+    // the caller asks for them or not” – possibly as an “fabrication”:
+    //   stx_dev_*, stx_blksize, stx_mode, stx_nlinks, stx_uid, stx_gid,
+    //   stx_[amc]time*, stx_ino, stx_size, stx_blocks.
+    // Additionally stx_rdev_* will always be filled for device nodes, otherwise
+    // they will be set to 0.
+    //
+    // We could use `stx->stx_mask` with some of the other flags to disambiguate
+    // between the cases of the value being zero vs unset, but so-far this is
+    // only being done for `st(x)_btime` field.
+    PyStructSequence_SET_ITEM(v, 0, PyLong_FromLong((long)stx->stx_mode));
+    Py_BUILD_ASSERT(sizeof(unsigned long long) >= sizeof(stx->stx_ino));
+    PyStructSequence_SET_ITEM(v, 1, PyLong_FromUnsignedLongLong(stx->stx_ino));
+    PyStructSequence_SET_ITEM(v, 2, _PyLong_FromDev(makedev(stx->stx_dev_major, stx->stx_dev_minor)));
+    PyStructSequence_SET_ITEM(v, 3, PyLong_FromLong((long)stx->stx_nlinks));
+    PyStructSequence_SET_ITEM(v, 4, _PyLong_FromUid(stx->stx_uid));
+    PyStructSequence_SET_ITEM(v, 5, _PyLong_FromGid(stx->stx_gid));
+    Py_BUILD_ASSERT(sizeof(long long) >= sizeof(stx->stx_size));
+    PyStructSequence_SET_ITEM(v, 6, PyLong_FromLongLong(stx->stx_size));
+
+    fill_time(v, 7, 10, 14, stx->stx_atime.tv_sec, stx->stx_atime.tv_nsec);
+    fill_time(v, 8, 11, 15, stx->stx_mtime.tv_sec, stx->stx_mtime.tv_nsec);
+    fill_time(v, 9, 12, 16, stx->stx_ctime.tv_sec, stx->stx_ctime.tv_nsec);
+    
+    if(stx->stx_mask & STATX_BTIME) {
+        fill_time(v, -1, 13, 17, stx->stx_btime.tv_sec, stx->stx_btime.tv_nsec);
+    } else {
+        PY_XINCREF(Py_None);
+        PY_XINCREF(Py_None);
+        PyStructSequence_SET_ITEM(v, 13, Py_None);
+        PyStructSequence_SET_ITEM(v, 17, Py_None);
+    }
+
+    attributes = stx->stx_attributes & stx->stx_attributes_mask;
+    PyStructSequence_SET_ITEM(v, ST_ATTRIBUTES_IDX,
+                              PyLong_FromUnsignedLongLong(attributes));
+    PyStructSequence_SET_ITEM(v, ST_ATTRIBUTES_MASK_IDX,
+                              PyLong_FromUnsignedLongLong(stx->stx_attributes_mask));
+
+    PyStructSequence_SET_ITEM(v, ST_BLKSIZE_IDX,
+                              PyLong_FromLong((long)stx->stx_blksize));
+    PyStructSequence_SET_ITEM(v, ST_BLOCKS_IDX,
+                              PyLong_FromLong((long)stx->stx_blocks));
+
+    PyStructSequence_SET_ITEM(v, ST_RDEV_IDX,
+                              _PyLong_FromDev(makedev(stx->stx_rdev_major, stx->stx_rdev_minor)));
+
+    if (PyErr_Occurred()) {
+        Py_DECREF(v);
+        return NULL;
+    }
+
+    return v;
+}
+
+#else /* HAVE_LINUX_STATX */
+
 /* pack a system stat C structure into the Python stat tuple
    (used by posix_stat() and posix_fstat()) */
 static PyObject*
@@ -2305,6 +2428,8 @@ _pystat_fromstructstat(STRUCT_STAT *st)
     return v;
 }
 
+#endif /* !HAVE_LINUX_STATX */
+
 /* POSIX methods */
 
 
@@ -2342,7 +2467,7 @@ posix_do_stat(const char *function_name, path_t *path,
 #endif /* HAVE_LSTAT */
 #ifdef HAVE_FSTATAT
     if ((dir_fd != DEFAULT_DIR_FD) || !follow_symlinks)
-        result = fstatat(dir_fd, path->narrow, &st,
+        result = FSTATAT(dir_fd, path->narrow, &st,
                          follow_symlinks ? 0 : AT_SYMLINK_NOFOLLOW);
     else
 #endif /* HAVE_FSTATAT */
@@ -12702,7 +12827,7 @@ DirEntry_fetch_stat(DirEntry *self, int follow_symlinks)
     const char *path = PyBytes_AS_STRING(ub);
     if (self->dir_fd != DEFAULT_DIR_FD) {
 #ifdef HAVE_FSTATAT
-        result = fstatat(self->dir_fd, path, &st,
+        result = FSTATAT(self->dir_fd, path, &st,
                          follow_symlinks ? 0 : AT_SYMLINK_NOFOLLOW);
 #else
         PyErr_SetString(PyExc_NotImplementedError, "can't fetch stat");
